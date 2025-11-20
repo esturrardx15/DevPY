@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<!--
+ARQUIVO: index.html
+FUNÇÃO: Interface principal do chat.
+DESCRIÇÃO: Esta página é renderizada pelo Flask e contém toda a lógica do lado do cliente
+           (JavaScript) para se conectar ao servidor, enviar e receber mensagens.
+-->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Verso</title>
+    <!-- Incluindo a biblioteca do cliente Socket.IO -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        /*
+        COMO FUNCIONA: O CSS define a aparência do chat.
+        - `display: flex` e `flex-direction: column` em `#messages` permite o alinhamento dos balões.
+        - `align-self: flex-end` e `flex-start` alinham os balões à direita e à esquerda.
+        */
+        body { font-family: Arial, 'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif; margin: 0; padding: 20px; background-color: #0c1624; }
+        #chat-container { max-width: 800px; margin: auto; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden; }
+        #header { background-color: #4CAF50; color: white; padding: 15px; text-align: center; }
+        #header h1 { margin: 0; font-size: 1.5em; }
+        #header p { margin: 5px 0 0; font-size: 0.9em; }
+        /* Fundo da área de mensagens */
+        #messages { list-style-type: none; margin: 0; padding: 20px; height: 400px; overflow-y: auto; display: flex; flex-direction: column; background-color: #e8f5e9c0; }
+        #messages li { padding: 8px 12px; margin-bottom: 10px; border-radius: 20px; max-width: 80%; word-wrap: break-word; }
+        #messages li.user-message { background-color: #bbdefb; color: #000; align-self: flex-end; }
+        #messages li.other-message { /* A cor de fundo será definida via JS */ color: #ffffff; align-self: flex-start; position: relative; }
+        #messages li.system-message { background-color: #f0f0f0; color: #555; align-self: center; font-style: italic; font-size: 0.9em; position: relative; }
+        #form-wrapper { background-color: #f0f4f8; } /* Fundo da área de digitação */
+        #form { display: flex; padding: 10px 20px; background-color: #05eb18dc; }
+        #input { border: 1px solid #ddd; padding: 10px; flex-grow: 1; border-radius: 20px; margin-right: 10px; }
+        #form button { background: #4CAF50; border: none; color: white; padding: 10px 20px; border-radius: 20px; cursor: pointer; }
+        #form button:hover { background: #45a049; }
+
+        /* Estilos para a função de Resposta */
+        .reply-button {
+            display: none; /* Escondido por padrão */
+            position: absolute;
+            right: 8px; /* Posição DENTRO da mensagem */
+            top: 6px;
+            /* transform: translateY(-50%); */ /* Não é mais necessário */
+            background: rgba(0,0,0,0.2); /* Fundo semi-transparente para integrar melhor */
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 24px;
+            text-align: center;
+        }
+        /* Mostra o botão quando o mouse está sobre qualquer mensagem que não seja do sistema */
+        #messages li:not(.system-message):hover .reply-button { 
+            display: block; 
+        }
+        .reply-context {
+            background-color: rgba(0, 0, 0, 0.1);
+            padding: 5px 10px;
+            margin-bottom: 5px;
+            border-radius: 10px;
+            font-size: 0.9em;
+            border-left: 3px solid #4CAF50;
+        }
+        .reply-context strong { color: #333; }
+        #reply-preview {
+            display: none; /* Escondido por padrão */
+            padding: 10px 20px;
+            background-color: rgba(0,0,0,0.1);
+            border-bottom: 1px solid #ccc;
+            font-size: 0.9em;
+            position: relative;
+        }
+        #reply-preview-text {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-right: 25px; /* Espaço para o botão de cancelar */
+        }
+        #cancel-reply {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: #555;
+        }
+    </style>
+    <style>
+        #typing-indicator { 
+            background-color: #e8f5e9c0; /* Mesma cor de fundo das mensagens */
+            color: #888; /* Cor do texto cinza */
+            font-style: italic; 
+            padding: 0 20px 10px; 
+            height: 1.2em; }
+    </style>
+</head>
+<body>
+
+    <div id="chat-container">
+        <div id="header">
+            <h1>Chat Verso</h1>
+            <!--
+            COMO FUNCIONA: A expressão `{{ username }}` é uma sintaxe do motor de templates Jinja2, usado pelo Flask.
+            O Flask substitui essa expressão pelo valor da variável `username` que foi passada na função `render_template`.
+            -->
+            <!-- O nome de usuário é injetado aqui pelo Flask -->
+            <p>Conectado como: <strong id="username">{{ username }}</strong></p>
+        </div>
+
+        <ul id="messages"></ul>
+
+        <div id="typing-indicator"></div>
+
+        <!-- Wrapper para o formulário e a pré-visualização da resposta -->
+        <div id="form-wrapper">
+            <div id="reply-preview">
+                <div id="reply-preview-text"></div>
+                <button id="cancel-reply">&times;</button>
+            </div>
+            <form id="form" action="">
+                <input id="input" autocomplete="off" placeholder="Digite sua mensagem..." />
+                <button>Enviar</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // =====================================================================================
+        // LÓGICA DO CLIENTE (JAVASCRIPT)
+        // =====================================================================================
+
+        // Conecta ao servidor Socket.IO que está rodando na mesma origem
+        const socket = io();
+
+        // Pega os elementos da página
+        const form = document.getElementById('form');
+        const input = document.getElementById('input');
+        const messages = document.getElementById('messages');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const username = document.getElementById('username').textContent; // Pega o nome de usuário da tag
+        const replyPreview = document.getElementById('reply-preview');
+        const replyPreviewText = document.getElementById('reply-preview-text');
+        const cancelReplyBtn = document.getElementById('cancel-reply');
+
+        // Variável para guardar o ID da mensagem que está sendo respondida
+        let replyingToMessageId = null;
+
+        // Envia uma mensagem quando o formulário é submetido
+        form.addEventListener('submit', function(e) {
+            e.preventDefault(); // Impede o recarregamento da página
+            if (input.value) {
+                const messageData = {
+                    text: input.value,
+                    reply_to: replyingToMessageId
+                };
+
+                socket.emit('message', messageData);
+                socket.emit('stop_typing'); // Garante que o indicador "digitando" pare
+                input.value = ''; // Limpa o campo de input
+                cancelReply(); // Limpa o estado de resposta
+            }
+        });
+
+        // Ouve por mensagens vindas do servidor
+        socket.on('message', function(data) {
+            addMessage(data);
+        });
+
+        // Ouve por notificações do sistema (entrada/saída de usuários)
+        socket.on('user_update', function(data) {
+            addSystemMessage(data.message);
+        });
+
+        // Lógica do indicador "Digitando..."
+        let typingTimer;
+        input.addEventListener('input', () => {
+            clearTimeout(typingTimer);
+            socket.emit('typing'); // Informa que está digitando
+            typingTimer = setTimeout(() => {
+                socket.emit('stop_typing'); // Informa que parou de digitar após um tempo
+            }, 2000); // 2 segundos de inatividade
+        });
+
+        socket.on('user_typing', (data) => {
+            if (data.sid !== socket.id) {
+                typingIndicator.textContent = `${data.username} está digitando...`;
+            }
+        });
+
+        socket.on('user_stop_typing', (data) => {
+            if (typingIndicator.textContent.includes(data.username)) {
+                typingIndicator.textContent = '';
+            }
+        });
+
+        // Função para iniciar o modo de resposta
+        function startReply(messageItem) {
+            replyingToMessageId = messageItem.dataset.messageId;
+            const originalText = messageItem.querySelector('.message-text').textContent;
+            replyPreviewText.textContent = `Respondendo a: ${originalText}`;
+            replyPreview.style.display = 'block';
+            input.focus();
+        }
+
+        // Função para cancelar o modo de resposta
+        function cancelReply() {
+            replyingToMessageId = null;
+            replyPreview.style.display = 'none';
+        }
+        cancelReplyBtn.addEventListener('click', cancelReply);
+
+
+        // Função para adicionar uma mensagem à lista na tela
+        function addMessage(data) {
+            const { id, text, username: msgUsername, color, sid, reply_context } = data;
+            const isUser = sid === socket.id;
+
+            const item = document.createElement('li');
+            item.dataset.messageId = id; // Armazena o ID da mensagem no elemento
+
+            // Se for uma resposta, cria o bloco de contexto
+            if (reply_context) {
+                const contextDiv = document.createElement('div');
+                contextDiv.classList.add('reply-context');
+                contextDiv.innerHTML = `<strong>${reply_context.username}</strong><br>${reply_context.text}`;
+                item.appendChild(contextDiv);
+            }
+
+            // Adiciona o texto da mensagem principal
+            const textSpan = document.createElement('span');
+            textSpan.classList.add('message-text'); 
+            // Adiciona um padding extra à direita para não sobrepor o botão de resposta
+            if (!isUser) {
+                item.style.paddingRight = '35px';
+            }
+            textSpan.textContent = isUser ? text : `${msgUsername}: ${text}`;
+            item.appendChild(textSpan);
+
+            // Adiciona o botão de resposta
+            const replyButton = document.createElement('button');
+            replyButton.classList.add('reply-button');
+            replyButton.innerHTML = '&#x21A9;'; // Seta de resposta
+            replyButton.onclick = () => startReply(item);
+            item.appendChild(replyButton);
+
+            // Aplica classes e estilos
+            if (isUser) {
+                item.classList.add('user-message');
+            } else {
+                item.classList.add('other-message');
+                item.style.backgroundColor = color;
+            }
+
+            // Adiciona os gatilhos de evento para resposta
+            // 1. Clique duplo
+            item.addEventListener('dblclick', () => startReply(item));
+
+            // 2. Lógica de deslizar (para mobile)
+            let touchStartX = 0; // Posição inicial do toque
+            let currentX = 0;    // Posição atual do toque
+            const swipeThreshold = 80; // Distância em pixels para ativar a resposta
+
+            item.addEventListener('touchstart', (e) => {
+                touchStartX = e.changedTouches[0].screenX;
+                // Remove a transição durante o arrasto para um movimento 1:1 com o dedo
+                item.style.transition = 'none';
+            }, { passive: true });
+
+            item.addEventListener('touchmove', (e) => {
+                currentX = e.changedTouches[0].screenX;
+                let diffX = currentX - touchStartX;
+
+                // Permite arrastar apenas da esquerda para a direita e limita a distância
+                if (diffX > 0) {
+                    // Limita o quanto a mensagem pode ser arrastada (ex: 100px)
+                    const dragDistance = Math.min(diffX, 100);
+                    item.style.transform = `translateX(${dragDistance}px)`;
+                }
+            }, { passive: true });
+
+            item.addEventListener('touchend', (e) => {
+                const touchEndX = e.changedTouches[0].screenX;
+                // Adiciona a transição de volta para a animação de retorno
+                item.style.transition = 'transform 0.2s ease-out';
+                // Faz a mensagem voltar para a posição original
+                item.style.transform = 'translateX(0)';
+
+                // Se a distância do deslize foi suficiente, ativa a resposta
+                if (touchEndX > touchStartX + swipeThreshold) {
+                    startReply(item);
+                }
+            });
+
+            messages.appendChild(item);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Função separada para mensagens do sistema
+        function addSystemMessage(messageText) {
+            const item = document.createElement('li');
+            item.textContent = messageText;
+            item.classList.add('system-message');
+            messages.appendChild(item);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Envia uma mensagem de "entrou no chat" quando a conexão é estabelecida
+        socket.on('connect', function() {
+            // Agora o cliente se "apresenta" ao servidor com seu nome de usuário.
+            // O servidor então saberá quem é quem.
+            socket.emit('join', { username: username });
+        });
+
+    </script>
+
+</body>
+</html>
